@@ -1,35 +1,71 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { useAudioRecorder } from "@/hooks/useAudioRecorder";
 
 export default function Home() {
-  const { isRecording, recordingTime, audioBlob, startRecording, stopRecording } =
-    useAudioRecorder();
-
   const [transcription, setTranscription] = useState("");
   const [processedOutput, setProcessedOutput] = useState("");
   const [isProcessing, setIsProcessing] = useState(false);
+  const [chunkCount, setChunkCount] = useState(0);
+  const transcriptionRef = useRef("");
 
-  // Handle audio blob when recording stops
+  // Handle chunk transcription in realtime
+  const handleChunk = useCallback(async (chunk: Blob) => {
+    try {
+      setChunkCount((prev) => prev + 1);
+
+      const formData = new FormData();
+      formData.append("file", chunk, `chunk-${Date.now()}.webm`);
+
+      const response = await fetch("/api/transcribe-chunk", {
+        method: "POST",
+        body: formData,
+      });
+
+      if (!response.ok) {
+        console.error("Chunk transcription failed");
+        return;
+      }
+
+      const data = await response.json();
+
+      if (data.transcription) {
+        // Append new transcription to existing text
+        transcriptionRef.current += data.transcription + " ";
+        setTranscription(transcriptionRef.current);
+      }
+    } catch (error) {
+      console.error("Error processing chunk:", error);
+    }
+  }, []);
+
+  const { isRecording, recordingTime, audioBlob, startRecording, stopRecording } =
+    useAudioRecorder({
+      onChunkAvailable: handleChunk,
+      chunkInterval: 3000, // 3 seconds
+    });
+
+  // Process final transcription with ChatGPT when recording stops
   useEffect(() => {
-    if (audioBlob) {
-      handleProcessAudio(audioBlob);
+    if (audioBlob && transcriptionRef.current) {
+      handleProcessFinalTranscription(transcriptionRef.current);
     }
   }, [audioBlob]);
 
-  const handleProcessAudio = async (blob: Blob) => {
+  const handleProcessFinalTranscription = async (finalText: string) => {
     setIsProcessing(true);
-    setTranscription("文字起こし中...");
     setProcessedOutput("処理中...");
 
     try {
-      const formData = new FormData();
-      formData.append("file", blob, "recording.webm");
-
       const response = await fetch("/api/process-audio", {
         method: "POST",
-        body: formData,
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          transcription: finalText,
+        }),
       });
 
       if (!response.ok) {
@@ -37,15 +73,22 @@ export default function Home() {
       }
 
       const data = await response.json();
-      setTranscription(data.transcription);
       setProcessedOutput(data.processedOutput);
     } catch (error) {
-      console.error("Error processing audio:", error);
-      setTranscription("エラーが発生しました。");
+      console.error("Error processing final transcription:", error);
       setProcessedOutput("処理に失敗しました。");
     } finally {
       setIsProcessing(false);
     }
+  };
+
+  const handleStartRecording = () => {
+    // Reset state
+    transcriptionRef.current = "";
+    setTranscription("");
+    setProcessedOutput("");
+    setChunkCount(0);
+    startRecording();
   };
 
   const formatTime = (seconds: number) => {
@@ -61,6 +104,11 @@ export default function Home() {
         <h1 className="text-xl font-bold text-center text-gray-800 dark:text-gray-100">
           Whisper to Coding
         </h1>
+        {isRecording && (
+          <p className="text-xs text-center text-gray-500 dark:text-gray-400 mt-1">
+            リアルタイム文字起こし中... (チャンク: {chunkCount})
+          </p>
+        )}
       </header>
 
       {/* Main Content - Split View */}
@@ -71,7 +119,7 @@ export default function Home() {
             文字起こし (Transcript)
           </h2>
           <div className="bg-white dark:bg-gray-800 p-4 rounded-lg shadow-sm min-h-[300px] whitespace-pre-wrap text-gray-800 dark:text-gray-200">
-            {transcription || "ここに文字起こし結果が表示されます..."}
+            {transcription || "ここに文字起こし結果がリアルタイムで表示されます..."}
           </div>
         </div>
 
@@ -81,7 +129,7 @@ export default function Home() {
             生成プロンプト (Processed Output)
           </h2>
           <div className="bg-white dark:bg-gray-800 p-4 rounded-lg shadow-sm min-h-[300px] whitespace-pre-wrap text-gray-800 dark:text-gray-200 border border-indigo-100 dark:border-indigo-900/30">
-            {processedOutput || "ここに生成されたプロンプトが表示されます..."}
+            {processedOutput || "録音停止後、ここに生成されたプロンプトが表示されます..."}
           </div>
         </div>
       </div>
@@ -93,7 +141,7 @@ export default function Home() {
         </div>
 
         <button
-          onClick={isRecording ? stopRecording : startRecording}
+          onClick={isRecording ? stopRecording : handleStartRecording}
           disabled={isProcessing}
           className={`
             relative flex items-center justify-center w-16 h-16 rounded-full transition-all duration-300 shadow-lg

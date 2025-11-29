@@ -7,28 +7,46 @@ const openai = new OpenAI({
 
 export async function POST(request: Request) {
     try {
-        const formData = await request.formData();
-        const file = formData.get("file") as File;
+        const contentType = request.headers.get("content-type");
+        let transcribedText = "";
 
-        if (!file) {
-            return NextResponse.json(
-                { error: "No file provided" },
-                { status: 400 }
-            );
+        // Handle JSON request (from realtime transcription)
+        if (contentType?.includes("application/json")) {
+            const body = await request.json();
+            transcribedText = body.transcription;
+
+            if (!transcribedText) {
+                return NextResponse.json(
+                    { error: "No transcription provided" },
+                    { status: 400 }
+                );
+            }
+        }
+        // Handle FormData request (from original implementation)
+        else {
+            const formData = await request.formData();
+            const file = formData.get("file") as File;
+
+            if (!file) {
+                return NextResponse.json(
+                    { error: "No file provided" },
+                    { status: 400 }
+                );
+            }
+
+            // Transcribe audio using Whisper
+            const transcription = await openai.audio.transcriptions.create({
+                file: file,
+                model: "whisper-1",
+                language: "ja",
+            });
+
+            transcribedText = transcription.text;
         }
 
-        // 1. Transcribe audio using Whisper
-        const transcription = await openai.audio.transcriptions.create({
-            file: file,
-            model: "whisper-1",
-            language: "ja", // Default to Japanese as per user request context
-        });
-
-        const transcribedText = transcription.text;
-
-        // 2. Process text using ChatGPT to generate a prompt
+        // Process text using ChatGPT to generate a prompt
         const completion = await openai.chat.completions.create({
-            model: "gpt-4o", // Use a high-quality model for prompt generation
+            model: "gpt-4o",
             messages: [
                 {
                     role: "system",

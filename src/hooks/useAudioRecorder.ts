@@ -6,18 +6,28 @@ export interface AudioRecorderState {
   audioBlob: Blob | null;
 }
 
-export const useAudioRecorder = () => {
+export interface UseAudioRecorderOptions {
+  onChunkAvailable?: (chunk: Blob) => void;
+  chunkInterval?: number; // milliseconds
+}
+
+export const useAudioRecorder = (options?: UseAudioRecorderOptions) => {
+  const { onChunkAvailable, chunkInterval = 3000 } = options || {};
+
   const [isRecording, setIsRecording] = useState(false);
   const [recordingTime, setRecordingTime] = useState(0);
   const [audioBlob, setAudioBlob] = useState<Blob | null>(null);
-  
+
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const chunksRef = useRef<Blob[]>([]);
   const timerRef = useRef<NodeJS.Timeout | null>(null);
+  const streamRef = useRef<MediaStream | null>(null);
 
   const startRecording = useCallback(async () => {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      streamRef.current = stream;
+
       const mediaRecorder = new MediaRecorder(stream);
       mediaRecorderRef.current = mediaRecorder;
       chunksRef.current = [];
@@ -25,16 +35,27 @@ export const useAudioRecorder = () => {
       mediaRecorder.ondataavailable = (e) => {
         if (e.data.size > 0) {
           chunksRef.current.push(e.data);
+
+          // If callback is provided, send chunk immediately for realtime processing
+          if (onChunkAvailable) {
+            const chunk = new Blob([e.data], { type: "audio/webm" });
+            onChunkAvailable(chunk);
+          }
         }
       };
 
       mediaRecorder.onstop = () => {
         const blob = new Blob(chunksRef.current, { type: "audio/webm" });
         setAudioBlob(blob);
-        stream.getTracks().forEach((track) => track.stop());
+
+        if (streamRef.current) {
+          streamRef.current.getTracks().forEach((track) => track.stop());
+          streamRef.current = null;
+        }
       };
 
-      mediaRecorder.start();
+      // Start recording with timeslice for chunk-based recording
+      mediaRecorder.start(chunkInterval);
       setIsRecording(true);
       setRecordingTime(0);
 
@@ -45,7 +66,7 @@ export const useAudioRecorder = () => {
       console.error("Error accessing microphone:", error);
       alert("マイクへのアクセスが許可されていません。");
     }
-  }, []);
+  }, [onChunkAvailable, chunkInterval]);
 
   const stopRecording = useCallback(() => {
     if (mediaRecorderRef.current && isRecording) {
